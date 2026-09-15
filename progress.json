@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-15T16:00:30.987Z",
+  "generated_at": "2026-09-15T16:00:33.596Z",
   "items": {
     "problem:270": {
       "kind": "problem",
@@ -10,7 +10,7 @@
       "url": "https://www.deep-ml.com/problems/270",
       "path": "problems/0270-ml-pipeline-dag-scheduler-with-critical-path-analysis",
       "first_solved_at": "2026-09-15T15:59:22.000Z",
-      "last_pushed_at": "2026-09-15T15:59:22.000Z",
+      "last_pushed_at": "2026-09-15T16:00:33.595Z",
       "language": "python",
       "lines": 94
     }
