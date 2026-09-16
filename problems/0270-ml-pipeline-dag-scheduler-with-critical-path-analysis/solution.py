@@ -2,93 +2,151 @@ import heapq
 from collections import defaultdict
 
 
+_EMPTY_ANALYSIS = {
+    "execution_order": [],
+    "earliest_start": {},
+    "earliest_finish": {},
+    "latest_start": {},
+    "latest_finish": {},
+    "slack": {},
+    "critical_path": [],
+    "makespan": 0,
+}
+
+
 def analyze_ml_pipeline(tasks: list) -> dict:
-    """
-    Analyze an ML pipeline DAG for scheduling and critical path.
-
-    Args:
-        tasks: list of task dicts with:
-            - 'id': task identifier (str)
-            - 'duration': task duration in minutes (int)
-            - 'dependencies': list of task IDs this task depends on
-
-    Returns:
-        dict with:
-            - 'execution_order': topologically sorted list of task IDs
-            - 'earliest_start': dict mapping task ID to earliest start time
-            - 'earliest_finish': dict mapping task ID to earliest finish time
-            - 'latest_start': dict mapping task ID to latest start time
-            - 'latest_finish': dict mapping task ID to latest finish time
-            - 'slack': dict mapping task ID to slack time
-            - 'critical_path': list of task IDs on critical path (in execution order)
-            - 'makespan': total time to complete pipeline
-    """
-    result = {
-        'execution_order': [],
-        'earliest_start': {},
-        'earliest_finish': {},
-        'latest_start': {},
-        'latest_finish': {},
-        'slack': {},
-        'critical_path': [],
-        'makespan': 0,
-    }
+    """Analyze scheduling and critical-path timing for an ML pipeline DAG."""
     if not tasks:
-        return result
+        return _empty_result()
 
-    duration = {t['id']: t['duration'] for t in tasks}
-    deps = {t['id']: list(t.get('dependencies', [])) for t in tasks}
+    durations = {task["id"]: task["duration"] for task in tasks}
+    dependencies = {
+        task["id"]: list(task.get("dependencies", []))
+        for task in tasks
+    }
 
-    succ = defaultdict(list)
-    indeg = {tid: 0 for tid in duration}
-    for tid in duration:
-        for d in deps[tid]:
-            succ[d].append(tid)
-            indeg[tid] += 1
+    successors, indegrees = _build_dependency_graph(
+        task_ids=durations,
+        dependencies=dependencies,
+    )
+    execution_order = _topological_order(
+        task_ids=durations,
+        successors=successors,
+        indegrees=indegrees,
+    )
 
-    # Kahn's algorithm with a min-heap for alphabetical tie-breaking
-    heap = [tid for tid in duration if indeg[tid] == 0]
-    heapq.heapify(heap)
-    topo = []
-    while heap:
-        v = heapq.heappop(heap)
-        topo.append(v)
-        for u in succ[v]:
-            indeg[u] -= 1
-            if indeg[u] == 0:
-                heapq.heappush(heap, u)
+    earliest_start, earliest_finish = _forward_pass(
+        execution_order=execution_order,
+        durations=durations,
+        dependencies=dependencies,
+    )
+    makespan = max(earliest_finish.values(), default=0)
 
-    # Forward pass: earliest start/finish
-    es, ef = {}, {}
-    for v in topo:
-        es[v] = max((ef[d] for d in deps[v]), default=0)
-        ef[v] = es[v] + duration[v]
-    makespan = max(ef.values()) if ef else 0
+    latest_start, latest_finish = _backward_pass(
+        execution_order=execution_order,
+        durations=durations,
+        successors=successors,
+        makespan=makespan,
+    )
 
-    # Backward pass: latest start/finish
-    ls, lf = {}, {}
-    for v in reversed(topo):
-        lf[v] = min((ls[u] for u in succ[v]), default=makespan)
-        ls[v] = lf[v] - duration[v]
+    slack = {
+        task_id: latest_start[task_id] - earliest_start[task_id]
+        for task_id in execution_order
+    }
+    critical_path = [
+        task_id
+        for task_id in execution_order
+        if abs(slack[task_id]) < 1e-9
+    ]
 
-    # Emit all per-task dicts in execution (topological) order
-    es = {v: es[v] for v in topo}
-    ef = {v: ef[v] for v in topo}
-    ls = {v: ls[v] for v in topo}
-    lf = {v: lf[v] for v in topo}
-    slack = {v: ls[v] - es[v] for v in topo}
+    return {
+        "execution_order": execution_order,
+        "earliest_start": earliest_start,
+        "earliest_finish": earliest_finish,
+        "latest_start": latest_start,
+        "latest_finish": latest_finish,
+        "slack": slack,
+        "critical_path": critical_path,
+        "makespan": makespan,
+    }
 
-    # Critical path: zero-slack tasks, in execution order
-    critical_path = [v for v in topo if abs(slack[v]) < 1e-9]
 
-    result.update({
-        'execution_order': topo,
-        'earliest_start': es,
-        'earliest_finish': ef,
-        'latest_start': ls,
-        'latest_finish': lf,
-        'slack': slack,
-        'critical_path': critical_path,
-        'makespan': makespan,
-    })
-    return result
+def _build_dependency_graph(task_ids, dependencies):
+    successors = defaultdict(list)
+    indegrees = {task_id: 0 for task_id in task_ids}
+
+    for task_id in task_ids:
+        for dependency_id in dependencies[task_id]:
+            successors[dependency_id].append(task_id)
+            indegrees[task_id] += 1
+
+    return successors, indegrees
+
+
+def _topological_order(task_ids, successors, indegrees):
+    ready = [
+        task_id
+        for task_id in task_ids
+        if indegrees[task_id] == 0
+    ]
+    heapq.heapify(ready)
+
+    order = []
+
+    while ready:
+        task_id = heapq.heappop(ready)
+        order.append(task_id)
+
+        for successor_id in successors[task_id]:
+            indegrees[successor_id] -= 1
+
+            if indegrees[successor_id] == 0:
+                heapq.heappush(ready, successor_id)
+
+    return order
+
+
+def _forward_pass(execution_order, durations, dependencies):
+    earliest_start = {}
+    earliest_finish = {}
+
+    for task_id in execution_order:
+        start = max(
+            (
+                earliest_finish[dependency_id]
+                for dependency_id in dependencies[task_id]
+            ),
+            default=0,
+        )
+        earliest_start[task_id] = start
+        earliest_finish[task_id] = start + durations[task_id]
+
+    return earliest_start, earliest_finish
+
+
+def _backward_pass(execution_order, durations, successors, makespan):
+    latest_start = {}
+    latest_finish = {}
+
+    for task_id in reversed(execution_order):
+        finish = min(
+            (
+                latest_start[successor_id]
+                for successor_id in successors[task_id]
+            ),
+            default=makespan,
+        )
+        latest_finish[task_id] = finish
+        latest_start[task_id] = finish - durations[task_id]
+
+    return (
+        {task_id: latest_start[task_id] for task_id in execution_order},
+        {task_id: latest_finish[task_id] for task_id in execution_order},
+    )
+
+
+def _empty_result():
+    return {
+        key: value.copy() if isinstance(value, (dict, list)) else value
+        for key, value in _EMPTY_ANALYSIS.items()
+    }
