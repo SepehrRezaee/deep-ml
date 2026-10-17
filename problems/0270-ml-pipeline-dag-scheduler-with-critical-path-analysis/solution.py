@@ -36,58 +36,70 @@ def analyze_ml_pipeline(tasks: list) -> dict:
     if not tasks:
         return result
 
-    duration = {t['id']: t['duration'] for t in tasks}
-    deps = {t['id']: list(t.get('dependencies', [])) for t in tasks}
+    durations = {task['id']: task['duration'] for task in tasks}
+    dependencies = {
+        task['id']: list(task.get('dependencies', []))
+        for task in tasks
+    }
 
-    succ = defaultdict(list)
-    indeg = {tid: 0 for tid in duration}
-    for tid in duration:
-        for d in deps[tid]:
-            succ[d].append(tid)
-            indeg[tid] += 1
+    dependents = defaultdict(list)
+    remaining_dependencies = {task_id: 0 for task_id in durations}
+    for task_id, prerequisites in dependencies.items():
+        for prerequisite in prerequisites:
+            dependents[prerequisite].append(task_id)
+            remaining_dependencies[task_id] += 1
 
-    # Kahn's algorithm with a min-heap for alphabetical tie-breaking
-    heap = [tid for tid in duration if indeg[tid] == 0]
-    heapq.heapify(heap)
-    topo = []
-    while heap:
-        v = heapq.heappop(heap)
-        topo.append(v)
-        for u in succ[v]:
-            indeg[u] -= 1
-            if indeg[u] == 0:
-                heapq.heappush(heap, u)
+    ready = [task_id for task_id, count in remaining_dependencies.items() if count == 0]
+    heapq.heapify(ready)
+    execution_order = []
 
-    # Forward pass: earliest start/finish
-    es, ef = {}, {}
-    for v in topo:
-        es[v] = max((ef[d] for d in deps[v]), default=0)
-        ef[v] = es[v] + duration[v]
-    makespan = max(ef.values()) if ef else 0
+    # The heap picks the alphabetically first task whenever several are ready.
+    while ready:
+        task_id = heapq.heappop(ready)
+        execution_order.append(task_id)
+        for dependent in dependents[task_id]:
+            remaining_dependencies[dependent] -= 1
+            if remaining_dependencies[dependent] == 0:
+                heapq.heappush(ready, dependent)
 
-    # Backward pass: latest start/finish
-    ls, lf = {}, {}
-    for v in reversed(topo):
-        lf[v] = min((ls[u] for u in succ[v]), default=makespan)
-        ls[v] = lf[v] - duration[v]
+    earliest_start = {}
+    earliest_finish = {}
+    for task_id in execution_order:
+        start = max(
+            (earliest_finish[prerequisite] for prerequisite in dependencies[task_id]),
+            default=0,
+        )
+        earliest_start[task_id] = start
+        earliest_finish[task_id] = start + durations[task_id]
 
-    slack = {v: ls[v] - es[v] for v in topo}
+    makespan = max(earliest_finish.values(), default=0)
 
-    # Emit all per-task dicts in execution (topological) order
-    es = {v: es[v] for v in topo}
-    ef = {v: ef[v] for v in topo}
-    ls = {v: ls[v] for v in topo}
-    lf = {v: lf[v] for v in topo}
-    slack = {v: slack[v] for v in topo}
+    # Work backward to find how late each task can run without delaying the pipeline.
+    latest_start = {}
+    latest_finish = {}
+    for task_id in reversed(execution_order):
+        finish = min(
+            (latest_start[dependent] for dependent in dependents[task_id]),
+            default=makespan,
+        )
+        latest_finish[task_id] = finish
+        latest_start[task_id] = finish - durations[task_id]
 
-    critical_path = [v for v in topo if abs(slack[v]) < 1e-9]
+    slack = {
+        task_id: latest_start[task_id] - earliest_start[task_id]
+        for task_id in execution_order
+    }
+    critical_path = [
+        task_id for task_id in execution_order
+        if abs(slack[task_id]) < 1e-9
+    ]
 
     result.update({
-        'execution_order': topo,
-        'earliest_start': es,
-        'earliest_finish': ef,
-        'latest_start': ls,
-        'latest_finish': lf,
+        'execution_order': execution_order,
+        'earliest_start': earliest_start,
+        'earliest_finish': earliest_finish,
+        'latest_start': {task_id: latest_start[task_id] for task_id in execution_order},
+        'latest_finish': {task_id: latest_finish[task_id] for task_id in execution_order},
         'slack': slack,
         'critical_path': critical_path,
         'makespan': makespan,
